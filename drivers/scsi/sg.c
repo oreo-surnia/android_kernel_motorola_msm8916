@@ -387,9 +387,6 @@ sg_read(struct file *filp, char __user *buf, size_t count, loff_t * ppos)
 	struct sg_header *old_hdr = NULL;
 	int retval = 0;
 
-	if (unlikely(segment_eq(get_fs(), KERNEL_DS)))
-		return -EINVAL;
-
 	if ((!(sfp = (Sg_fd *) filp->private_data)) || (!(sdp = sfp->parentdp)))
 		return -ENXIO;
 	SCSI_LOG_TIMEOUT(3, printk("sg_read: %s, count=%d\n",
@@ -530,7 +527,7 @@ static ssize_t
 sg_new_read(Sg_fd * sfp, char __user *buf, size_t count, Sg_request * srp)
 {
 	sg_io_hdr_t *hp = &srp->header;
-	int err = 0, err2;
+	int err = 0;
 	int len;
 
 	if (count < SZ_SG_IO_HDR) {
@@ -559,8 +556,8 @@ sg_new_read(Sg_fd * sfp, char __user *buf, size_t count, Sg_request * srp)
 		goto err_out;
 	}
 err_out:
-	err2 = sg_finish_rem_req(srp);
-	return err ? : err2 ? : count;
+	err = sg_finish_rem_req(srp);
+	return (0 == err) ? count : err;
 }
 
 static ssize_t
@@ -575,9 +572,6 @@ sg_write(struct file *filp, const char __user *buf, size_t count, loff_t * ppos)
 	struct sg_header old_hdr;
 	sg_io_hdr_t *hp;
 	unsigned char cmnd[SG_MAX_CDB_SIZE];
-
-	if (unlikely(segment_eq(get_fs(), KERNEL_DS)))
-		return -EINVAL;
 
 	if ((!(sfp = (Sg_fd *) filp->private_data)) || (!(sdp = sfp->parentdp)))
 		return -ENXIO;
@@ -638,8 +632,7 @@ sg_write(struct file *filp, const char __user *buf, size_t count, loff_t * ppos)
 	else
 		hp->dxfer_direction = (mxsize > 0) ? SG_DXFER_FROM_DEV : SG_DXFER_NONE;
 	hp->dxfer_len = mxsize;
-	if ((hp->dxfer_direction == SG_DXFER_TO_DEV) ||
-	    (hp->dxfer_direction == SG_DXFER_TO_FROM_DEV))
+	if (hp->dxfer_direction == SG_DXFER_TO_DEV)
 		hp->dxferp = (char __user *)buf + cmd_size;
 	else
 		hp->dxferp = NULL;
@@ -771,13 +764,8 @@ sg_common_write(Sg_fd * sfp, Sg_request * srp,
 		return k;	/* probably out of space --> ENOMEM */
 	}
 	if (sdp->detached) {
-		if (srp->bio) {
-			if (srp->rq->cmd != srp->rq->__cmd)
-				kfree(srp->rq->cmd);
-
+		if (srp->bio)
 			blk_end_request_all(srp->rq, -EIO);
-			srp->rq = NULL;
-		}
 		sg_finish_rem_req(srp);
 		return -ENODEV;
 	}
@@ -994,7 +982,7 @@ sg_ioctl(struct file *filp, unsigned int cmd_in, unsigned long arg)
 		result = get_user(val, ip);
 		if (result)
 			return result;
-		if (val > MAX_COMMAND_SIZE)
+		if (val > SG_MAX_CDB_SIZE)
 			return -ENOMEM;
 		sfp->next_cmd_len = (val > 0) ? val : 0;
 		return 0;
@@ -1277,7 +1265,7 @@ sg_mmap(struct file *filp, struct vm_area_struct *vma)
 	}
 
 	sfp->mmap_called = 1;
-	vma->vm_flags |= VM_IO | VM_DONTEXPAND | VM_DONTDUMP;
+	vma->vm_flags |= VM_DONTEXPAND | VM_DONTDUMP;
 	vma->vm_private_data = sfp;
 	vma->vm_ops = &sg_mmap_vm_ops;
 	return 0;
@@ -1682,12 +1670,12 @@ static int sg_start_req(Sg_request *srp, unsigned char *cmd)
 		return -ENOMEM;
 	}
 
-	blk_rq_set_block_pc(rq);
-
 	if (hp->cmd_len > BLK_MAX_CDB)
 		rq->cmd = long_cmdp;
 	memcpy(rq->cmd, cmd, hp->cmd_len);
+
 	rq->cmd_len = hp->cmd_len;
+	rq->cmd_type = REQ_TYPE_BLOCK_PC;
 
 	srp->rq = rq;
 	rq->end_io_data = srp;
@@ -1724,9 +1712,6 @@ static int sg_start_req(Sg_request *srp, unsigned char *cmd)
 		else
 			md->from_user = 0;
 	}
-
-	if (unlikely(iov_count > UIO_MAXIOV))
-		return -EINVAL;
 
 	if (iov_count) {
 		int len, size = sizeof(struct sg_iovec) * iov_count;

@@ -21,7 +21,7 @@ config ANDROID_BINDER_IPC
 
 config ANDROID_BINDER_IPC_32BIT
 	bool "Use old 32-bit binder api"
-	default n
+	default y if !64BIT
 	---help---
 	  Enable to support an old 32-bit Android user-space. Breaks the new
 	  Android user-space.
@@ -29,7 +29,7 @@ config ANDROID_BINDER_IPC_32BIT
 config ANDROID_BINDER_DEVICES
 	string "Android Binder devices"
 	depends on ANDROID_BINDER_IPC
-	default "binder,hwbinder,vndbinder"
+	default "binder,hwbinder"
 	---help---
 	  Default value for the binder.devices parameter.
 
@@ -98,14 +98,6 @@ config ANDROID_LOW_MEMORY_KILLER_AUTODETECT_OOM_ADJ_VALUES
 	  Detect oom_adj values written to
 	  /sys/module/lowmemorykiller/parameters/adj and convert them
 	  to oom_score_adj values.
-
-config ANDROID_LMK_ADJ_RBTREE
-	bool "Use RBTREE for Android Low Memory Killer"
-	depends on ANDROID_LOW_MEMORY_KILLER
-	default N
-	---help---
-	    Use oom_score_adj rbtree to select the best proecss to kill
-	    when system in low memory status.
 
 config ANDROID_INTF_ALARM_DEV
 	bool "Android alarm driver"

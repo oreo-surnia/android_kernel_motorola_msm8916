@@ -88,7 +88,6 @@
 #include <linux/flex_array.h>
 #include <linux/posix-timers.h>
 #include <linux/qmp_sphinx_instrumentation.h>
-#include <linux/cpufreq.h>
 #ifdef CONFIG_HARDWALL
 #include <asm/hardwall.h>
 #endif
@@ -247,7 +246,7 @@ out:
 
 static int proc_pid_auxv(struct task_struct *task, char *buffer)
 {
-	struct mm_struct *mm = mm_access(task, PTRACE_MODE_READ_FSCREDS);
+	struct mm_struct *mm = mm_access(task, PTRACE_MODE_READ);
 	int res = PTR_ERR(mm);
 	if (mm && !IS_ERR(mm)) {
 		unsigned int nwords = 0;
@@ -277,7 +276,7 @@ static int proc_pid_wchan(struct task_struct *task, char *buffer)
 	wchan = get_wchan(task);
 
 	if (lookup_symbol_name(wchan, symname) < 0)
-		if (!ptrace_may_access(task, PTRACE_MODE_READ_FSCREDS))
+		if (!ptrace_may_access(task, PTRACE_MODE_READ))
 			return 0;
 		else
 			return sprintf(buffer, "%lu", wchan);
@@ -291,7 +290,7 @@ static int lock_trace(struct task_struct *task)
 	int err = mutex_lock_killable(&task->signal->cred_guard_mutex);
 	if (err)
 		return err;
-	if (!ptrace_may_access(task, PTRACE_MODE_ATTACH_FSCREDS)) {
+	if (!ptrace_may_access(task, PTRACE_MODE_ATTACH)) {
 		mutex_unlock(&task->signal->cred_guard_mutex);
 		return -EPERM;
 	}
@@ -565,7 +564,7 @@ static int proc_fd_access_allowed(struct inode *inode)
 	 */
 	task = get_proc_task(inode);
 	if (task) {
-		allowed = ptrace_may_access(task, PTRACE_MODE_READ_FSCREDS);
+		allowed = ptrace_may_access(task, PTRACE_MODE_READ);
 		put_task_struct(task);
 	}
 	return allowed;
@@ -600,7 +599,7 @@ static bool has_pid_permissions(struct pid_namespace *pid,
 		return true;
 	if (in_group_p(pid->pid_gid))
 		return true;
-	return ptrace_may_access(task, PTRACE_MODE_READ_FSCREDS);
+	return ptrace_may_access(task, PTRACE_MODE_READ);
 }
 
 
@@ -715,7 +714,7 @@ static int __mem_open(struct inode *inode, struct file *file, unsigned int mode)
 	if (!task)
 		return -ESRCH;
 
-	mm = mm_access(task, mode | PTRACE_MODE_FSCREDS);
+	mm = mm_access(task, mode);
 	put_task_struct(task);
 
 	if (IS_ERR(mm))
@@ -1006,9 +1005,7 @@ static ssize_t oom_adj_write(struct file *file, const char __user *buf,
 		  current->comm, task_pid_nr(current), task_pid_nr(task),
 		  task_pid_nr(task));
 
-	delete_from_adj_tree(task);
 	task->signal->oom_score_adj = oom_adj;
-	add_2_adj_tree(task);
 	trace_oom_score_adj_update(task);
 err_sighand:
 	unlock_task_sighand(task, &flags);
@@ -1126,10 +1123,7 @@ static ssize_t oom_score_adj_write(struct file *file, const char __user *buf,
 		goto err_sighand;
 	}
 
-	delete_from_adj_tree(task);
 	task->signal->oom_score_adj = (short)oom_score_adj;
-	add_2_adj_tree(task);
-
 	if (has_capability_noaudit(current, CAP_SYS_RESOURCE))
 		task->signal->oom_score_adj_min = (short)oom_score_adj;
 	trace_oom_score_adj_update(task);
@@ -1815,7 +1809,7 @@ static int map_files_d_revalidate(struct dentry *dentry, unsigned int flags)
 	if (!task)
 		goto out_notask;
 
-	mm = mm_access(task, PTRACE_MODE_READ_FSCREDS);
+	mm = mm_access(task, PTRACE_MODE_READ);
 	if (IS_ERR_OR_NULL(mm))
 		goto out;
 
@@ -1950,7 +1944,7 @@ static struct dentry *proc_map_files_lookup(struct inode *dir,
 		goto out;
 
 	result = ERR_PTR(-EACCES);
-	if (!ptrace_may_access(task, PTRACE_MODE_READ_FSCREDS))
+	if (!ptrace_may_access(task, PTRACE_MODE_READ))
 		goto out_put_task;
 
 	result = ERR_PTR(-ENOENT);
@@ -2006,7 +2000,7 @@ proc_map_files_readdir(struct file *filp, void *dirent, filldir_t filldir)
 		goto out;
 
 	ret = -EACCES;
-	if (!ptrace_may_access(task, PTRACE_MODE_READ_FSCREDS))
+	if (!ptrace_may_access(task, PTRACE_MODE_READ))
 		goto out_put_task;
 
 	ret = 0;
@@ -2542,7 +2536,7 @@ static int do_io_accounting(struct task_struct *task, char *buffer, int whole)
 	if (result)
 		return result;
 
-	if (!ptrace_may_access(task, PTRACE_MODE_READ_FSCREDS)) {
+	if (!ptrace_may_access(task, PTRACE_MODE_READ)) {
 		result = -EACCES;
 		goto out_unlock;
 	}
@@ -2666,57 +2660,6 @@ static const struct file_operations proc_projid_map_operations = {
 	.llseek		= seq_lseek,
 	.release	= proc_id_map_release,
 };
-
-static int proc_setgroups_open(struct inode *inode, struct file *file)
-{
-	struct user_namespace *ns = NULL;
-	struct task_struct *task;
-	int ret;
-
-	ret = -ESRCH;
-	task = get_proc_task(inode);
-	if (task) {
-		rcu_read_lock();
-		ns = get_user_ns(task_cred_xxx(task, user_ns));
-		rcu_read_unlock();
-		put_task_struct(task);
-	}
-	if (!ns)
-		goto err;
-
-	if (file->f_mode & FMODE_WRITE) {
-		ret = -EACCES;
-		if (!ns_capable(ns, CAP_SYS_ADMIN))
-			goto err_put_ns;
-	}
-
-	ret = single_open(file, &proc_setgroups_show, ns);
-	if (ret)
-		goto err_put_ns;
-
-	return 0;
-err_put_ns:
-	put_user_ns(ns);
-err:
-	return ret;
-}
-
-static int proc_setgroups_release(struct inode *inode, struct file *file)
-{
-	struct seq_file *seq = file->private_data;
-	struct user_namespace *ns = seq->private;
-	int ret = single_release(inode, file);
-	put_user_ns(ns);
-	return ret;
-}
-
-static const struct file_operations proc_setgroups_operations = {
-	.open		= proc_setgroups_open,
-	.write		= proc_setgroups_write,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= proc_setgroups_release,
-};
 #endif /* CONFIG_USER_NS */
 
 static int proc_pid_personality(struct seq_file *m, struct pid_namespace *ns,
@@ -2730,47 +2673,6 @@ static int proc_pid_personality(struct seq_file *m, struct pid_namespace *ns,
 	return err;
 }
 
-#ifdef CONFIG_TASK_CPUFREQ_STATS
-static int cpufreq_stats_show(struct seq_file *m, void *v)
-{
-	struct inode *inode = m->private;
-	struct task_struct *p;
-	unsigned int *freq_table = NULL;
-	int cpu, i, max_state;
-	p = get_proc_task(inode);
-	if (!p)
-		return -ESRCH;
-	for (cpu = 0; cpu < NR_CPUS; cpu++) {
-		max_state = p->cpufreq_stats[cpu].max_state;
-		if(max_state > 0) {
-			freq_table = kmalloc(max_state * sizeof(unsigned int),
-					     GFP_KERNEL);
-			update_freq_table(freq_table, cpu, max_state);
-			for (i = 0; i < max_state; i++) {
-				seq_printf(m, "%d  %u  %llu\n", cpu,
-					   freq_table[i],
-					   (unsigned long long)jiffies_64_to_clock_t(
-							   p->cpufreq_stats[cpu].cumulative_time_in_state[i]));
-			}
-			kfree(freq_table);
-		}
-	}
-	put_task_struct(p);
-	return 0;
-}
-
-static int cpufreq_stats_open(struct inode *inode, struct file *filp)
-{
-	return single_open(filp, cpufreq_stats_show, inode);
-}
-
-static const struct file_operations proc_pid_cpufreq_stats_operations = {
-	.open           = cpufreq_stats_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-#endif
 /*
  * Thread groups
  */
@@ -2795,9 +2697,6 @@ static const struct pid_entry tgid_base_stuff[] = {
 	INF("limits",	  S_IRUGO, proc_pid_limits),
 #ifdef CONFIG_SCHED_DEBUG
 	REG("sched",      S_IRUGO|S_IWUSR, proc_pid_sched_operations),
-#endif
-#ifdef CONFIG_TASK_CPUFREQ_STATS
-	REG("cpufreq_stats",      S_IRUGO|S_IWUSR, proc_pid_cpufreq_stats_operations),
 #endif
 #ifdef CONFIG_SCHED_AUTOGROUP
 	REG("autogroup",  S_IRUGO|S_IWUSR, proc_pid_sched_autogroup_operations),
@@ -2872,7 +2771,6 @@ static const struct pid_entry tgid_base_stuff[] = {
 	REG("uid_map",    S_IRUGO|S_IWUSR, proc_uid_map_operations),
 	REG("gid_map",    S_IRUGO|S_IWUSR, proc_gid_map_operations),
 	REG("projid_map", S_IRUGO|S_IWUSR, proc_projid_map_operations),
-	REG("setgroups",  S_IRUGO|S_IWUSR, proc_setgroups_operations),
 #endif
 #ifdef CONFIG_CHECKPOINT_RESTORE
 	REG("timers",	  S_IRUGO, proc_timers_operations),
@@ -3198,9 +3096,6 @@ static const struct pid_entry tid_base_stuff[] = {
 #ifdef CONFIG_SCHED_DEBUG
 	REG("sched",     S_IRUGO|S_IWUSR, proc_pid_sched_operations),
 #endif
-#ifdef CONFIG_TASK_CPUFREQ_STATS
-	REG("cpufreq_stats",      S_IRUGO|S_IWUSR, proc_pid_cpufreq_stats_operations),
-#endif
 	NOD("comm",      S_IFREG|S_IRUGO|S_IWUSR,
 			 &proc_tid_comm_inode_operations,
 			 &proc_pid_set_comm_operations, {}),
@@ -3269,7 +3164,6 @@ static const struct pid_entry tid_base_stuff[] = {
 	REG("uid_map",    S_IRUGO|S_IWUSR, proc_uid_map_operations),
 	REG("gid_map",    S_IRUGO|S_IWUSR, proc_gid_map_operations),
 	REG("projid_map", S_IRUGO|S_IWUSR, proc_projid_map_operations),
-	REG("setgroups",  S_IRUGO|S_IWUSR, proc_setgroups_operations),
 #endif
 };
 
