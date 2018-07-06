@@ -123,6 +123,12 @@ out:
 	return err;
 }
 
+/* 1 = delete, 0 = cache */
+static int sdcardfs_d_delete(const struct dentry *d)
+{
+	return SDCARDFS_SB(d->d_sb)->options.nocache ? 1 : 0;
+}
+
 static void sdcardfs_d_release(struct dentry *dentry)
 {
 	if (!dentry || !dentry->d_fsdata)
@@ -179,11 +185,6 @@ static void sdcardfs_canonical_path(const struct path *path,
 				struct path *actual_path)
 {
 	sdcardfs_get_real_lower(path->dentry, actual_path);
-}
-
-static int sdcardfs_d_delete(const struct dentry * dentry)
-{
-	return dentry->d_inode && !S_ISDIR(dentry->d_inode->i_mode);
 }
 
 const struct dentry_operations sdcardfs_ci_dops = {
