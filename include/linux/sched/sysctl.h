@@ -47,6 +47,7 @@ extern unsigned int sysctl_sched_enable_power_aware;
 
 #if defined(CONFIG_SCHED_FREQ_INPUT) || defined(CONFIG_SCHED_HMP)
 extern unsigned int sysctl_sched_init_task_load_pct;
+extern unsigned int sysctl_sched_new_task_windows;
 #endif
 
 #ifdef CONFIG_SCHED_FREQ_INPUT
@@ -66,10 +67,6 @@ extern int sysctl_sched_upmigrate_min_nice;
 extern unsigned int sysctl_sched_prefer_idle;
 extern unsigned int sysctl_sched_powerband_limit_pct;
 extern unsigned int sysctl_sched_boost;
-
-#if defined(CONFIG_SCHED_FREQ_INPUT)
-extern unsigned int sysctl_sched_new_task_windows;
-#endif
 
 #else /* CONFIG_SCHED_HMP */
 
